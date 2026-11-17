@@ -46,7 +46,8 @@ def _is_cjk(ch):
     """True for CJK ideographs, kana, hangul and full-width punctuation."""
     cp = ord(ch)
     return (
-        0x3040 <= cp <= 0x30FF      # kana
+        0x3000 <= cp <= 0x303F      # CJK symbols and punctuation (、。「」etc.)
+        or 0x3040 <= cp <= 0x30FF   # kana
         or 0x3400 <= cp <= 0x4DBF   # CJK ext A
         or 0x4E00 <= cp <= 0x9FFF   # CJK unified
         or 0xF900 <= cp <= 0xFAFF   # CJK compat
@@ -80,11 +81,6 @@ def text_units(s):
     return sum(2 if _is_cjk(ch) else 1 for ch in s)
 
 
-def wrap_px(text, max_units):
-    """Wrap so no line exceeds max_units half-em units (the SVG half-em = font-size/2)."""
-    return wrap(text, max_units)
-
-
 def wrap(text, limit):
     """Wrap by rendered width. CJK counts as 2 units, Latin as 1 (half-em)."""
     if limit <= 0:
@@ -103,6 +99,31 @@ def wrap(text, limit):
     if line:
         lines.append(line)
     return lines
+
+
+def concept_label(raw: str, index: int) -> str:
+    """Build "<letter> · <name>", dropping a duplicate prefix but never the name.
+
+    A caller may pass a name that already carries the letter ("A — 车印"). That
+    prefix is redundant, so it is dropped and rebuilt canonically as "A · 车印" —
+    the letter is kept, only the separator is normalised.
+
+    A hyphen only counts as a separator when followed by a space or end of string:
+    "A-Team" is a name, not a prefixed label, so its hyphen must survive.
+    """
+    letter = chr(65 + index)
+    rest = raw.strip()
+    tail = rest[1:]
+    is_prefix = (
+        rest[:1] == letter
+        and (
+            tail[:1] in (" ", "·", "—", ":")
+            or (tail[:1] == "-" and tail[1:2] in ("", " "))
+        )
+    )
+    if is_prefix:
+        rest = tail.lstrip(" ·—:-")
+    return f"{letter} · {rest}"
 
 
 def main():
@@ -143,9 +164,15 @@ def main():
         _note = a.notes[i] if i < len(a.notes) else ""
         if _note:
             _note_lines = max(_note_lines, len(wrap(_note, int(_inner_w_probe / 9.5))))
-    # 26px leading per note line; guarantee at least one line of room
-    note_h = max(1, _note_lines) * 26 + 8
-    card_h = 40 + art_h + (lock_h + 24 if has_lock else 0) + 90 + 150 + (30 if a.recommend else 0) + note_h + 20
+    # The original formula reserved a flat 150px for the label + up to three note lines.
+    # Replace that allowance with the measured note height instead of stacking on top,
+    # otherwise every card (including Latin-only sheets) grows by the note height.
+    NOTE_BLOCK_BASE = 150      # original allowance: label row + 3 note lines
+    NOTE_LINE = 26             # 19px font, 26px leading
+    note_h = max(1, _note_lines) * NOTE_LINE
+    card_h = (40 + art_h + (lock_h + 24 if has_lock else 0) + 90
+              + max(NOTE_BLOCK_BASE, note_h)
+              + (30 if a.recommend else 0) + 20)
     header = 150
     H = header + rows * card_h + (rows - 1) * gap + pad
     parts = []
@@ -178,11 +205,7 @@ def main():
             sx += s + 26
         yy += 120
         raw = a.names[i] if i < len(a.names) else os.path.splitext(os.path.basename(f))[0]
-        # avoid duplicating an existing "A ·" / "A —" / "A:" prefix
-        if raw.lstrip()[:1] == chr(65 + i) and raw.lstrip()[1:2] in (" ", "·", "—", "-", ":"):
-            label = raw.lstrip()[1:].lstrip(" ·—:-")
-        else:
-            label = f"{chr(65 + i)} · {raw}"
+        label = concept_label(raw, i)
         parts.append(f'<text x="{inner_x}" y="{yy}" {font} font-size="26" font-weight="700" '
                      f'fill="{"#161616"}">{html.escape(label)}</text>')
         if rec:
